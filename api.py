@@ -28,14 +28,17 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from book import RiskBook
+from persistence import NullStore, PgStore
 from risk_engine import LONG, SHORT
 
 AUTO_FEED = os.environ.get("RE_AUTO_FEED", "1") != "0"
 FEED_INTERVAL = 0.5  # seconds between auto-feed ticks
+DATABASE_URL = os.environ.get("DATABASE_URL")  # e.g. postgresql://localhost/rektengine
 
 book = RiskBook()
 prices: dict[str, float] = {}          # symbol -> current mark
 clients: set[WebSocket] = set()
+store = NullStore()                    # replaced with PgStore at startup if configured
 
 
 # --- request bodies --------------------------------------------------------
@@ -99,10 +102,19 @@ async def broadcast(msg: dict):
 
 async def process_tick(symbol: str, price: float) -> list[dict]:
     prices[symbol] = price
-    events = [
-        {"acct_id": a, "symbol": s, "exit_price": px, "realized_pnl": pnl}
-        for a, s, px, pnl in book.on_tick(symbol, price)
-    ]
+    raw = book.on_tick(symbol, price)          # [(acct_id, symbol, exit_price, pnl)]
+
+    # persist liquidations: log each, then drop closed positions and update wallets
+    closed: dict[str, list[str]] = {}
+    for acct_id, sym, px, pnl in raw:
+        await store.record_liquidation(acct_id, sym, px, pnl)
+        closed.setdefault(acct_id, []).append(sym)
+    for acct_id, symbols in closed.items():
+        await store.delete_positions(acct_id, symbols)
+        await store.upsert_account(acct_id, book.accounts[acct_id])
+
+    events = [{"acct_id": a, "symbol": s, "exit_price": px, "realized_pnl": pnl}
+              for a, s, px, pnl in raw]
     await broadcast({"type": "tick", "symbol": symbol, "price": price})
     for ev in events:
         await broadcast({"type": "liquidation", **ev})
@@ -123,10 +135,20 @@ async def _auto_feed():
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global store
+    if DATABASE_URL:
+        try:
+            store = await PgStore.connect(DATABASE_URL)
+            await store.load_into(book, prices)
+            print(f"[persistence] Postgres connected; loaded {len(book.accounts)} accounts")
+        except Exception as e:
+            print(f"[persistence] Postgres unavailable ({e}); running in-memory")
+            store = NullStore()
     task = asyncio.create_task(_auto_feed()) if AUTO_FEED else None
     yield
     if task:
         task.cancel()
+    await store.close()
 
 
 app = FastAPI(title="RektEngine", lifespan=lifespan)
@@ -134,23 +156,26 @@ app = FastAPI(title="RektEngine", lifespan=lifespan)
 
 # --- routes ----------------------------------------------------------------
 @app.post("/accounts")
-def create_account(body: NewAccount):
+async def create_account(body: NewAccount):
     if body.id in book.accounts:
         raise HTTPException(409, f"account {body.id!r} exists")
-    book.add_account(body.id, body.balance, body.cross)
+    acct = book.add_account(body.id, body.balance, body.cross)
+    await store.upsert_account(body.id, acct)
     return {"id": body.id, "balance": body.balance, "cross": body.cross}
 
 
 @app.post("/accounts/{acct_id}/positions")
-def open_position(acct_id: str, body: NewPosition):
+async def open_position(acct_id: str, body: NewPosition):
     if acct_id not in book.accounts:
         raise HTTPException(404, f"no account {acct_id!r}")
     side = {"long": LONG, "short": SHORT}.get(body.side.lower())
     if side is None:
         raise HTTPException(422, "side must be 'long' or 'short'")
-    book.open(acct_id, body.symbol, side, body.size, body.entry,
-              body.leverage, body.mmr)
+    pos = book.open(acct_id, body.symbol, side, body.size, body.entry,
+                    body.leverage, body.mmr)
     prices.setdefault(body.symbol, body.entry)
+    await store.upsert_position(acct_id, pos)
+    await store.upsert_account(acct_id, book.accounts[acct_id])  # isolated margin moved
     return snapshot(acct_id)
 
 
