@@ -1,6 +1,7 @@
-# Real-Time Risk Engine
+# RektEngine
 
-A fast risk engine for leveraged trading. It tracks positions, computes
+**R**isk **E**valuation & **K**ill‑off **T**racking Engine — a fast risk
+engine for leveraged trading. It tracks positions, computes
 profit/loss and liquidation prices on every price tick, and auto-liquidates
 positions the moment they breach maintenance margin — the core job every
 leveraged exchange has to get right.
