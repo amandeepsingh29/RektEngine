@@ -21,16 +21,22 @@ leveraged exchange has to get right.
 | File | What it is |
 |------|-----------|
 | `risk_engine.py` | The engine: positions, margin, P&L, liquidation math. Runs correctness asserts + a benchmark under `__main__`. |
-| `simulator.py` | Mock market feed → engine → live dashboard → auto-liquidation, over asyncio. |
+| `simulator.py` | Mock market feed → engine → live dashboard → auto-liquidation, over asyncio. Offline, deterministic. |
+| `live_feed.py` | Real Binance WebSocket trade stream → the same engine and dashboard. |
 
 ## Run it
 
 ```bash
-python3 risk_engine.py   # self-check + throughput benchmark
-python3 simulator.py     # watch a 20x long get liquidated in real time
+python3 risk_engine.py          # self-check + throughput benchmark  (no deps)
+python3 simulator.py            # watch a 20x long get liquidated on demand  (no deps)
+
+pip install -r requirements.txt
+python3 live_feed.py            # live 20x long BTCUSDT off real market data
+python3 live_feed.py ethusdt 50 # 50x long ETHUSDT
 ```
 
-No dependencies — standard library only.
+The engine and simulator need only the standard library; the live feed needs
+`websockets`.
 
 ## The math
 
