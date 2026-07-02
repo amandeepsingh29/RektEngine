@@ -21,6 +21,7 @@ leveraged exchange has to get right.
 | File | What it is |
 |------|-----------|
 | `risk_engine.py` | The engine: positions, margin, P&L, liquidation math. Runs correctness asserts + a benchmark under `__main__`. |
+| `book.py` | Multi-account loop: holds many accounts, indexes positions by symbol, fans each tick out to only the exposed accounts, liquidates who breached. |
 | `simulator.py` | Mock market feed → engine → live dashboard → auto-liquidation, over asyncio. Offline, deterministic. |
 | `live_feed.py` | Real Binance WebSocket trade stream → the same engine and dashboard. |
 
@@ -28,6 +29,7 @@ leveraged exchange has to get right.
 
 ```bash
 python3 risk_engine.py          # self-check + throughput benchmark  (no deps)
+python3 book.py                 # multi-account checks + fan-out benchmark  (no deps)
 python3 simulator.py            # watch a 20x long get liquidated on demand  (no deps)
 
 pip install -r requirements.txt
