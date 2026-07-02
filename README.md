@@ -26,6 +26,7 @@ leveraged exchange has to get right.
 | `live_feed.py` | Real Binance WebSocket trade stream → the same engine and dashboard. |
 | `api.py` | FastAPI service: REST to create accounts / open positions / query risk, a background auto-feed, and a WebSocket that streams ticks + liquidation events. |
 | `dashboard.html` | Single-file live dashboard (vanilla JS, no build): KPIs, positions table with distance-to-liquidation, and a liquidation feed off `/ws`. Served at `/`. |
+| `persistence.py` | Postgres store (asyncpg): durable accounts, positions, and a liquidation audit log; rebuilds the book on startup. `NullStore` fallback runs fully in-memory. |
 | `test_api.py` | End-to-end check of the API (REST + WS liquidation), auto-feed disabled for determinism. |
 
 ## Run it
@@ -63,6 +64,22 @@ A background task random-walks the price of every symbol with open positions
 and streams it over `/ws`. Set `RE_AUTO_FEED=0` to drive prices only via
 `POST /tick`.
 
+### Persistence & scaling (optional)
+
+Both are opt-in via env vars; without them the service runs in-memory.
+
+```bash
+export DATABASE_URL=postgresql://localhost/rektengine   # durable state
+export REDIS_URL=redis://localhost:6379                 # cross-worker events
+uvicorn api:app --workers 4
+```
+
+- **Postgres** — accounts, positions, and a liquidation audit log. The book is
+  rebuilt from the database on startup, so the engine survives a restart.
+- **Redis** — pub/sub so `/ws` events fan out across worker processes; a tick
+  handled by one worker reaches WebSocket clients on all of them. With no
+  Redis, broadcasts stay in-process.
+
 ## The math
 
 Linear (USDT-margined) perpetual futures:
@@ -79,6 +96,5 @@ or wallet + other positions' P&L − their maintenance (cross).
 
 ## Not built yet
 
-Persistence (Redis/Postgres), a web/gRPC API, and containerization. The engine
-is in-memory, so state resets on restart. `mmr` is a single flat rate; real
-exchanges tier it by position size.
+Containerization (Docker Compose / Kubernetes). `mmr` is a single flat rate;
+real exchanges tier it by position size.

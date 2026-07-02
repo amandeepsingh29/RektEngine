@@ -18,11 +18,13 @@ only via POST /tick — the deterministic path used by tests.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -34,11 +36,14 @@ from risk_engine import LONG, SHORT
 AUTO_FEED = os.environ.get("RE_AUTO_FEED", "1") != "0"
 FEED_INTERVAL = 0.5  # seconds between auto-feed ticks
 DATABASE_URL = os.environ.get("DATABASE_URL")  # e.g. postgresql://localhost/rektengine
+REDIS_URL = os.environ.get("REDIS_URL")        # e.g. redis://localhost:6379
+CHANNEL = "rekt:events"
 
 book = RiskBook()
 prices: dict[str, float] = {}          # symbol -> current mark
 clients: set[WebSocket] = set()
 store = NullStore()                    # replaced with PgStore at startup if configured
+redis_client = None                    # set at startup if REDIS_URL is reachable
 
 
 # --- request bodies --------------------------------------------------------
@@ -89,7 +94,8 @@ def snapshot(acct_id: str) -> dict:
     }
 
 
-async def broadcast(msg: dict):
+async def broadcast_local(msg: dict):
+    """Send to WebSocket clients connected to THIS process."""
     dead = []
     for ws in clients:
         try:
@@ -98,6 +104,24 @@ async def broadcast(msg: dict):
             dead.append(ws)
     for ws in dead:
         clients.discard(ws)
+
+
+async def publish(msg: dict):
+    """Fan an event out to every worker (via Redis) or, with no Redis, to the
+    local clients directly."""
+    if redis_client is not None:
+        await redis_client.publish(CHANNEL, json.dumps(msg))
+    else:
+        await broadcast_local(msg)
+
+
+async def _subscribe():
+    """Relay events published to Redis onto this process's WS clients."""
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(CHANNEL)
+    async for message in pubsub.listen():
+        if message["type"] == "message":
+            await broadcast_local(json.loads(message["data"]))
 
 
 async def process_tick(symbol: str, price: float) -> list[dict]:
@@ -115,9 +139,9 @@ async def process_tick(symbol: str, price: float) -> list[dict]:
 
     events = [{"acct_id": a, "symbol": s, "exit_price": px, "realized_pnl": pnl}
               for a, s, px, pnl in raw]
-    await broadcast({"type": "tick", "symbol": symbol, "price": price})
+    await publish({"type": "tick", "symbol": symbol, "price": price})
     for ev in events:
-        await broadcast({"type": "liquidation", **ev})
+        await publish({"type": "liquidation", **ev})
     return events
 
 
@@ -135,7 +159,7 @@ async def _auto_feed():
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global store
+    global store, redis_client
     if DATABASE_URL:
         try:
             store = await PgStore.connect(DATABASE_URL)
@@ -144,10 +168,25 @@ async def lifespan(_: FastAPI):
         except Exception as e:
             print(f"[persistence] Postgres unavailable ({e}); running in-memory")
             store = NullStore()
-    task = asyncio.create_task(_auto_feed()) if AUTO_FEED else None
+
+    tasks = []
+    if REDIS_URL:
+        try:
+            redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+            await redis_client.ping()
+            tasks.append(asyncio.create_task(_subscribe()))
+            print("[events] Redis connected; broadcasting via pub/sub")
+        except Exception as e:
+            print(f"[events] Redis unavailable ({e}); broadcasting in-process")
+            redis_client = None
+
+    if AUTO_FEED:
+        tasks.append(asyncio.create_task(_auto_feed()))
     yield
-    if task:
-        task.cancel()
+    for t in tasks:
+        t.cancel()
+    if redis_client is not None:
+        await redis_client.aclose()
     await store.close()
 
 
