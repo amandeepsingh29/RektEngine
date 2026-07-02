@@ -25,6 +25,7 @@ leveraged exchange has to get right.
 | `simulator.py` | Mock market feed → engine → live dashboard → auto-liquidation, over asyncio. Offline, deterministic. |
 | `live_feed.py` | Real Binance WebSocket trade stream → the same engine and dashboard. |
 | `api.py` | FastAPI service: REST to create accounts / open positions / query risk, a background auto-feed, and a WebSocket that streams ticks + liquidation events. |
+| `dashboard.html` | Single-file live dashboard (vanilla JS, no build): KPIs, positions table with distance-to-liquidation, and a liquidation feed off `/ws`. Served at `/`. |
 | `test_api.py` | End-to-end check of the API (REST + WS liquidation), auto-feed disabled for determinism. |
 
 ## Run it
@@ -46,7 +47,7 @@ The engine and simulator need only the standard library; the live feed needs
 
 ```bash
 pip install -r requirements.txt
-uvicorn api:app --reload         # http://127.0.0.1:8000  (docs at /docs)
+uvicorn api:app --reload         # dashboard at /, API docs at /docs
 python3 test_api.py              # end-to-end REST + WebSocket check
 ```
 

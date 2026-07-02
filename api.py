@@ -21,8 +21,10 @@ import asyncio
 import os
 import random
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from book import RiskBook
@@ -152,9 +154,19 @@ def open_position(acct_id: str, body: NewPosition):
     return snapshot(acct_id)
 
 
+@app.get("/accounts")
+def list_accounts():
+    return [snapshot(a) for a in book.accounts]
+
+
 @app.get("/accounts/{acct_id}")
 def get_account(acct_id: str):
     return snapshot(acct_id)
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    return Path(__file__).with_name("dashboard.html").read_text()
 
 
 @app.post("/tick")
