@@ -24,6 +24,8 @@ leveraged exchange has to get right.
 | `book.py` | Multi-account loop: holds many accounts, indexes positions by symbol, fans each tick out to only the exposed accounts, liquidates who breached. |
 | `simulator.py` | Mock market feed → engine → live dashboard → auto-liquidation, over asyncio. Offline, deterministic. |
 | `live_feed.py` | Real Binance WebSocket trade stream → the same engine and dashboard. |
+| `api.py` | FastAPI service: REST to create accounts / open positions / query risk, a background auto-feed, and a WebSocket that streams ticks + liquidation events. |
+| `test_api.py` | End-to-end check of the API (REST + WS liquidation), auto-feed disabled for determinism. |
 
 ## Run it
 
@@ -39,6 +41,26 @@ python3 live_feed.py ethusdt 50 # 50x long ETHUSDT
 
 The engine and simulator need only the standard library; the live feed needs
 `websockets`.
+
+### The service
+
+```bash
+pip install -r requirements.txt
+uvicorn api:app --reload         # http://127.0.0.1:8000  (docs at /docs)
+python3 test_api.py              # end-to-end REST + WebSocket check
+```
+
+```
+POST /accounts                   create an account
+POST /accounts/{id}/positions    open a leveraged position
+GET  /accounts/{id}              risk snapshot (equity, P&L, liq prices)
+POST /tick                       inject a price tick
+WS   /ws                         stream ticks + liquidation events
+```
+
+A background task random-walks the price of every symbol with open positions
+and streams it over `/ws`. Set `RE_AUTO_FEED=0` to drive prices only via
+`POST /tick`.
 
 ## The math
 
